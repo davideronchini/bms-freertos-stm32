@@ -127,6 +127,7 @@ The system uses FreeRTOS to separate safety-critical and non-critical tasks. Tas
 - Functions provided by Analog Devices are wrapped in `Drivers/AnalogDevices_LTC`
 - Interface managed by `cell_monitoring.c` task
 
+<!---
 ### DWT Delay
 
 Microsecond-level delays (e.g. for LTC commands) are implemented with `DWT_Delay.h`, based on the ARM Core debug timer:
@@ -135,7 +136,7 @@ Microsecond-level delays (e.g. for LTC commands) are implemented with `DWT_Delay
 DWT_Delay_Init();         // Call once in system init
 DWT_Delay_us(200);        // Delay 200 microseconds
 ```
-
+--->
 ---
 
 ## 🛠️ Getting Started
