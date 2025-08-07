@@ -186,7 +186,7 @@ To run the BMS firmware:
 
 ## 📬 Contact
 
-For questions, contributions, or collaborations:
+For questions, contributions, or collaborations with my FS Team:
 
 - 📧 Email: [formulasae@sm.univpm.it](mailto:formulasae@sm.univpm.it)
 - 🔗 LinkedIn: [polimarcheracingteam](https://www.linkedin.com/company/polimarcheracingteam/posts/?feedView=all)
