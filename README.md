@@ -1,4 +1,4 @@
-# BMS 24-25  
+# BMS - FreeRTOS 
 **`Nucleo F446RE ⚡ + FreeRTOS ⏱️`**
 
 This repository contains the firmware for managing the Battery Management System (BMS) of the 2024–2025 Formula SAE electric vehicle, running on the **STM32 Nucleo-F446RE** with **FreeRTOS**.  
