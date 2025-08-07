@@ -146,7 +146,7 @@ To run the BMS firmware:
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/PolimarcheRacingTeam/BMS-24-25.git
+   [git clone https://github.com/PolimarcheRacingTeam/BMS-24-25.git](https://github.com/davideronchini/bms-freertos-stm32.git)
    ```
 
 2. **Open in STM32CubeIDE**
