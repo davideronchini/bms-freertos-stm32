@@ -1,0 +1,705 @@
+/*
+ * Feather M4 CAN - Controllo Caricatore EV011KA con BMS Integration
+ * Utilizza il controller CAN integrato della Feather M4 CAN
+ * 
+ * FUNZIONALITÀ:
+ * - Gestione completa caricamento EV011KA
+ * - Comunicazione con BMS Master
+ * - Controllo sicurezza e monitoraggio
+ * - Stato machine per gestione carica
+ */
+
+#include <CAN.h>  // Libreria nativa per Feather M4 CAN
+
+// ============================================================================
+// CONFIGURAZIONE PARAMETRI - DA PERSONALIZZARE
+// ============================================================================
+
+// PARAMETRI CARICATORE EV011KA
+const uint8_t CHARGER_ID = 6;           // ID caricatore (0-11) - CONFIGURARE
+const uint16_t VOUT_MAX_DEFAULT = 420;  // Tensione max default [V] - CONFIGURARE
+const uint16_t IOUT_MAX_DEFAULT = 15;   // Corrente max default [A] - CONFIGURARE  
+const uint16_t IAC_MAX = 16;            // Corrente max ingresso AC [A] - CONFIGURARE
+
+// PARAMETRI BMS COMMUNICATION
+const uint32_t BMS_REQUEST_ID = 0x18FF50F4;    // ID richieste dal BMS
+const uint32_t BMS_RESPONSE_ID = 0x18FF51F4;   // ID risposte al BMS
+const uint32_t BMS_STATUS_ID = 0x18FF52F4;     // ID stato batteria dal BMS
+const uint32_t CHARGER_STATUS_ID = 0x18FF53F4; // ID stato caricatore al BMS
+
+// CONFIGURAZIONE CAN
+const long CAN_SPEED = 500E3;  // 500 kbit/s
+
+// PIN CONFIGURATION (opzionali)
+const int STATUS_LED_PIN = 8;     // LED stato caricamento
+const int ERROR_LED_PIN = 13;     // LED errore (LED built-in)
+const int CHARGE_ENABLE_PIN = 5;  // Pin controllo relè caricatore (opzionale)
+
+// ============================================================================
+// STRUTTURE DATI E ENUMERAZIONI
+// ============================================================================
+
+// Stati della macchina a stati principale
+enum SystemState {
+  SYSTEM_INIT,
+  WAITING_BMS,
+  PRECHARGE_CHECK,
+  CHARGING_ACTIVE,
+  CHARGING_COMPLETE,
+  FAULT_STATE,
+  EMERGENCY_STOP
+};
+
+// Stati del caricatore EV011KA
+enum ChargerState {
+  CHARGER_OFF,
+  CHARGER_STANDBY,
+  CHARGER_STARTING,
+  CHARGER_ACTIVE,
+  CHARGER_STOPPING,
+  CHARGER_ERROR
+};
+
+// Comandi dal BMS Master
+enum BMSCommand {
+  BMS_CMD_STOP = 0x00,
+  BMS_CMD_START = 0x01,
+  BMS_CMD_PAUSE = 0x02,
+  BMS_CMD_EMERGENCY_STOP = 0xFF
+};
+
+// Struttura parametri di carica dal BMS
+struct ChargingParameters {
+  uint16_t max_voltage;      // Tensione massima richiesta [V * 10]
+  uint16_t max_current;      // Corrente massima richiesta [A * 10]
+  uint16_t target_voltage;   // Tensione target [V * 10]
+  uint8_t charging_mode;     // Modalità carica (CC/CV/etc)
+  bool emergency_stop;       // Stop di emergenza
+  uint32_t timestamp;        // Timestamp ultima comunicazione
+};
+
+// Struttura stato batteria dal BMS
+struct BatteryStatus {
+  uint16_t voltage;          // Tensione batteria [V * 10]
+  int16_t current;           // Corrente batteria [A * 10] (+ = carica)
+  uint8_t soc;               // Stato di carica [%]
+  int8_t temperature;        // Temperatura [°C]
+  uint8_t cell_count;        // Numero celle
+  bool balancing_active;     // Bilanciamento attivo
+  bool fault_present;        // Fault presente
+  uint32_t timestamp;        // Timestamp ultima ricezione
+};
+
+// Struttura stato caricatore EV011KA
+struct ChargerStatus {
+  bool enabled;
+  bool ac_present;
+  bool dc_output_enabled;
+  bool fault;
+  bool warning;
+  uint8_t fault_code;
+  uint8_t warning_code;
+  uint16_t output_voltage;   // [V * 10]
+  uint16_t output_current;   // [A * 10]
+  uint16_t input_voltage;    // [V * 10]
+  uint16_t input_current;    // [A * 10]
+  int8_t temperature;        // [°C]
+  uint32_t timestamp;
+};
+
+// ============================================================================
+// VARIABILI GLOBALI
+// ============================================================================
+
+// Stati del sistema
+SystemState current_system_state = SYSTEM_INIT;
+ChargerState current_charger_state = CHARGER_OFF;
+
+// Strutture dati
+ChargingParameters charge_params = {0};
+BatteryStatus battery_status = {0};
+ChargerStatus charger_status = {0};
+
+// ID messaggi CAN calcolati
+uint32_t CHARGER_CONTROL_ID;  // 0x5C0 + CHARGER_ID
+uint32_t CHARGER_STATUS_RX_ID = 0x610;  // Stato caricatore
+uint32_t CHARGER_MEASURE_ID = 0x611;    // Misure caricatore
+
+// Timing e controllo
+unsigned long last_control_send = 0;
+unsigned long last_status_send = 0;
+unsigned long last_bms_communication = 0;
+unsigned long charging_start_time = 0;
+unsigned long fault_timestamp = 0;
+
+// Intervalli temporali [ms]
+const unsigned long CONTROL_INTERVAL = 100;      // Invio controllo caricatore
+const unsigned long STATUS_INTERVAL = 500;       // Invio stato al BMS
+const unsigned long BMS_TIMEOUT = 2000;          // Timeout comunicazione BMS
+const unsigned long CHARGER_TIMEOUT = 1000;      // Timeout risposta caricatore
+const unsigned long PRECHARGE_TIMEOUT = 10000;   // Timeout precarica
+
+// Flags e contatori
+bool charging_authorized = false;
+bool emergency_stop_active = false;
+uint8_t communication_errors = 0;
+uint16_t charging_session_energy = 0;  // [Wh]
+
+// ============================================================================
+// FUNZIONI DI INIZIALIZZAZIONE
+// ============================================================================
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial && millis() < 3000) delay(10);  // Attendi max 3 secondi
+  
+  printHeader();
+  initializePins();
+  initializeCAN();
+  calculateCANIDs();
+  
+  Serial.println("Sistema inizializzato - In attesa comandi BMS...");
+  current_system_state = WAITING_BMS;
+}
+
+void printHeader() {
+  Serial.println("=====================================");
+  Serial.println("Feather M4 CAN - EV Charger Controller");
+  Serial.println("Caricatore: EV011KA EDN");
+  Serial.println("=====================================");
+  Serial.print("Charger ID: "); Serial.println(CHARGER_ID);
+  Serial.print("Vout Max: "); Serial.print(VOUT_MAX_DEFAULT); Serial.println("V");
+  Serial.print("Iout Max: "); Serial.print(IOUT_MAX_DEFAULT); Serial.println("A");
+  Serial.println("=====================================");
+}
+
+void initializePins() {
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  pinMode(ERROR_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, LOW);
+  digitalWrite(ERROR_LED_PIN, LOW);
+  
+  if (CHARGE_ENABLE_PIN > 0) {
+    pinMode(CHARGE_ENABLE_PIN, OUTPUT);
+    digitalWrite(CHARGE_ENABLE_PIN, LOW);  // Caricatore disabilitato all'avvio
+  }
+}
+
+bool initializeCAN() {
+  Serial.print("Inizializzazione CAN bus...");
+  
+  if (!CAN.begin(CAN_SPEED)) {
+    Serial.println(" ERRORE!");
+    setErrorState("CAN Init Failed");
+    return false;
+  }
+  
+  Serial.println(" OK");
+  return true;
+}
+
+void calculateCANIDs() {
+  CHARGER_CONTROL_ID = 0x5C0 + CHARGER_ID;
+  Serial.print("Control Message ID: 0x");
+  Serial.println(CHARGER_CONTROL_ID, HEX);
+}
+
+// ============================================================================
+// GESTIONE COMUNICAZIONE CAN
+// ============================================================================
+
+void processCAN() {
+  int packetSize = CAN.parsePacket();
+  
+  if (packetSize > 0) {
+    uint32_t id = CAN.packetId();
+    uint8_t data[8];
+    int len = 0;
+    
+    // Leggi dati
+    while (CAN.available() && len < 8) {
+      data[len++] = CAN.read();
+    }
+    
+    // Processa messaggi in base all'ID
+    if (id == BMS_REQUEST_ID) {
+      processBMSRequest(data, len);
+    }
+    else if (id == BMS_STATUS_ID) {
+      processBMSStatus(data, len);
+    }
+    else if (id == CHARGER_STATUS_RX_ID) {
+      processChargerStatus(data, len);
+    }
+    else if (id == CHARGER_MEASURE_ID) {
+      processChargerMeasures(data, len);
+    }
+  }
+}
+
+void processBMSRequest(uint8_t* data, int len) {
+  if (len >= 8) {
+    last_bms_communication = millis();
+    
+    uint8_t command = data[0];
+    charge_params.max_voltage = (data[2] << 8) | data[1];
+    charge_params.max_current = (data[4] << 8) | data[3];
+    charge_params.target_voltage = (data[6] << 8) | data[5];
+    charge_params.charging_mode = data[7];
+    
+    Serial.print("BMS Command: ");
+    Serial.print(command);
+    Serial.print(", Vmax: ");
+    Serial.print(charge_params.max_voltage / 10.0);
+    Serial.print("V, Imax: ");
+    Serial.print(charge_params.max_current / 10.0);
+    Serial.println("A");
+    
+    switch (command) {
+      case BMS_CMD_START:
+        if (current_system_state == WAITING_BMS) {
+          charging_authorized = true;
+          current_system_state = PRECHARGE_CHECK;
+          Serial.println("Carica autorizzata dal BMS");
+        }
+        break;
+        
+      case BMS_CMD_STOP:
+        charging_authorized = false;
+        if (current_system_state == CHARGING_ACTIVE) {
+          current_system_state = CHARGING_COMPLETE;
+          Serial.println("Stop carica richiesto dal BMS");
+        }
+        break;
+        
+      case BMS_CMD_EMERGENCY_STOP:
+        emergency_stop_active = true;
+        current_system_state = EMERGENCY_STOP;
+        Serial.println("EMERGENCY STOP dal BMS!");
+        break;
+    }
+  }
+}
+
+void processBMSStatus(uint8_t* data, int len) {
+  if (len >= 8) {
+    battery_status.voltage = (data[1] << 8) | data[0];
+    battery_status.current = (data[3] << 8) | data[2];
+    battery_status.soc = data[4];
+    battery_status.temperature = (int8_t)data[5];
+    battery_status.fault_present = (data[6] & 0x01) != 0;
+    battery_status.balancing_active = (data[6] & 0x02) != 0;
+    battery_status.timestamp = millis();
+    
+    // Check per condizioni di sicurezza
+    if (battery_status.fault_present && current_system_state == CHARGING_ACTIVE) {
+      Serial.println("Fault batteria rilevato - Stop carica");
+      current_system_state = FAULT_STATE;
+    }
+  }
+}
+
+void processChargerStatus(uint8_t* data, int len) {
+  if (len >= 4) {
+    charger_status.enabled = (data[0] & 0x01) != 0;
+    charger_status.ac_present = (data[0] & 0x02) != 0;
+    charger_status.dc_output_enabled = (data[0] & 0x04) != 0;
+    charger_status.fault = (data[0] & 0x08) != 0;
+    charger_status.warning = (data[0] & 0x10) != 0;
+    
+    if (len >= 3) {
+      charger_status.fault_code = data[1];
+      charger_status.warning_code = data[2];
+    }
+    
+    charger_status.timestamp = millis();
+    
+    // Aggiorna stato caricatore
+    updateChargerState();
+  }
+}
+
+void processChargerMeasures(uint8_t* data, int len) {
+  if (len >= 8) {
+    charger_status.output_voltage = (data[1] << 8) | data[0];
+    charger_status.output_current = (data[3] << 8) | data[2];
+    charger_status.input_voltage = (data[5] << 8) | data[4];
+    charger_status.input_current = (data[7] << 8) | data[6];
+    
+    // Calcola energia (approssimativo)
+    static unsigned long last_energy_calc = 0;
+    if (millis() - last_energy_calc > 1000 && current_system_state == CHARGING_ACTIVE) {
+      uint32_t power_w = (charger_status.output_voltage * charger_status.output_current) / 100;
+      charging_session_energy += power_w / 3600;  // Wh
+      last_energy_calc = millis();
+    }
+  }
+}
+
+// ============================================================================
+// INVIO MESSAGGI CAN
+// ============================================================================
+
+void sendChargerControl() {
+  uint8_t data[8] = {0};
+  
+  // Prepara messaggio controllo per EV011KA
+  uint16_t vout_set = min(charge_params.max_voltage, (uint16_t)(VOUT_MAX_DEFAULT * 10));
+  uint16_t iout_set = min(charge_params.max_current, (uint16_t)(IOUT_MAX_DEFAULT * 10));
+  uint16_t iac_set = IAC_MAX * 10;
+  
+  data[0] = vout_set & 0xFF;
+  data[1] = (vout_set >> 8) & 0xFF;
+  data[2] = iout_set & 0xFF;
+  data[3] = (iout_set >> 8) & 0xFF;
+  data[4] = iac_set & 0xFF;
+  data[5] = (iac_set >> 8) & 0xFF;
+  
+  // Byte di controllo
+  uint8_t control_byte = 0;
+  if (current_system_state == CHARGING_ACTIVE || current_system_state == PRECHARGE_CHECK) {
+    control_byte |= 0x01;  // Enable
+  }
+  data[6] = control_byte;
+  data[7] = 0;  // Riservato
+  
+  // Invia messaggio
+  CAN.beginPacket(CHARGER_CONTROL_ID);
+  CAN.write(data, 8);
+  CAN.endPacket();
+}
+
+void sendStatusToBMS() {
+  uint8_t data[8] = {0};
+  
+  // Stato sistema
+  data[0] = (uint8_t)current_system_state;
+  data[1] = (uint8_t)current_charger_state;
+  
+  // Tensione e corrente output
+  data[2] = charger_status.output_voltage & 0xFF;
+  data[3] = (charger_status.output_voltage >> 8) & 0xFF;
+  data[4] = charger_status.output_current & 0xFF;
+  data[5] = (charger_status.output_current >> 8) & 0xFF;
+  
+  // Flags stato
+  uint8_t status_flags = 0;
+  if (charger_status.fault) status_flags |= 0x01;
+  if (charger_status.warning) status_flags |= 0x02;
+  if (emergency_stop_active) status_flags |= 0x04;
+  if (charging_authorized) status_flags |= 0x08;
+  data[6] = status_flags;
+  
+  data[7] = battery_status.soc;  // SOC corrente
+  
+  // Invia al BMS
+  CAN.beginPacket(CHARGER_STATUS_ID);
+  CAN.write(data, 8);
+  CAN.endPacket();
+}
+
+// ============================================================================
+// MACCHINA A STATI PRINCIPALE
+// ============================================================================
+
+void updateSystemState() {
+  static unsigned long state_enter_time = 0;
+  static SystemState previous_state = SYSTEM_INIT;
+  
+  // Rileva cambio stato
+  if (current_system_state != previous_state) {
+    state_enter_time = millis();
+    Serial.print("Stato: ");
+    Serial.print(previous_state);
+    Serial.print(" -> ");
+    Serial.println(current_system_state);
+    previous_state = current_system_state;
+  }
+  
+  // Controlli di sicurezza comuni
+  checkSafetyConditions();
+  
+  switch (current_system_state) {
+    case SYSTEM_INIT:
+      // Inizializzazione completata nel setup()
+      break;
+      
+    case WAITING_BMS:
+      updateLEDs(false, false);  // LED spenti
+      if (CHARGE_ENABLE_PIN > 0) digitalWrite(CHARGE_ENABLE_PIN, LOW);
+      
+      // Controlla timeout comunicazione BMS
+      if (millis() - last_bms_communication > BMS_TIMEOUT && last_bms_communication > 0) {
+        communication_errors++;
+        Serial.println("Warning: Timeout comunicazione BMS");
+      }
+      break;
+      
+    case PRECHARGE_CHECK:
+      updateLEDs(true, false);  // LED stato lampeggiante
+      
+      // Abilita caricatore per precarica
+      if (CHARGE_ENABLE_PIN > 0) digitalWrite(CHARGE_ENABLE_PIN, HIGH);
+      
+      // Controlla se caricatore è pronto
+      if (charger_status.enabled && charger_status.ac_present) {
+        if (abs((int)charger_status.output_voltage - (int)battery_status.voltage) < 50) {  // 5V diff
+          current_system_state = CHARGING_ACTIVE;
+          charging_start_time = millis();
+          Serial.println("Precarica OK - Avvio carica attiva");
+        }
+      }
+      
+      // Timeout precarica
+      if (millis() - state_enter_time > PRECHARGE_TIMEOUT) {
+        setErrorState("Precharge timeout");
+      }
+      break;
+      
+    case CHARGING_ACTIVE:
+      updateLEDs(true, false);  // LED stato acceso fisso
+      
+      // Controlla condizioni di fine carica
+      if (battery_status.soc >= 100 || 
+          battery_status.voltage >= charge_params.target_voltage) {
+        current_system_state = CHARGING_COMPLETE;
+        Serial.println("Carica completata");
+      }
+      
+      // Controlla se caricatore è ancora attivo
+      if (!charger_status.enabled || !charger_status.dc_output_enabled) {
+        Serial.println("Caricatore non più attivo");
+        current_system_state = FAULT_STATE;
+      }
+      break;
+      
+    case CHARGING_COMPLETE:
+      updateLEDs(false, false);  // LED spenti
+      if (CHARGE_ENABLE_PIN > 0) digitalWrite(CHARGE_ENABLE_PIN, LOW);
+      
+      Serial.print("Carica completata. Energia: ");
+      Serial.print(charging_session_energy);
+      Serial.println(" Wh");
+      
+      // Torna in attesa dopo conferma BMS
+      if (!charging_authorized) {
+        current_system_state = WAITING_BMS;
+        charging_session_energy = 0;
+      }
+      break;
+      
+    case FAULT_STATE:
+      updateLEDs(false, true);  // LED errore lampeggiante
+      if (CHARGE_ENABLE_PIN > 0) digitalWrite(CHARGE_ENABLE_PIN, LOW);
+      
+      // Reset automatico dopo risoluzione fault
+      if (!charger_status.fault && !battery_status.fault_present && 
+          millis() - fault_timestamp > 5000) {
+        current_system_state = WAITING_BMS;
+        communication_errors = 0;
+        Serial.println("Fault risolto - Sistema pronto");
+      }
+      break;
+      
+    case EMERGENCY_STOP:
+      updateLEDs(false, true);  // LED errore acceso fisso
+      if (CHARGE_ENABLE_PIN > 0) digitalWrite(CHARGE_ENABLE_PIN, LOW);
+      
+      // Solo reset manuale via seriale per emergency stop
+      break;
+  }
+}
+
+void updateChargerState() {
+  ChargerState new_state = CHARGER_ERROR;
+  
+  if (charger_status.fault) {
+    new_state = CHARGER_ERROR;
+  } else if (!charger_status.enabled) {
+    new_state = CHARGER_OFF;
+  } else if (charger_status.enabled && !charger_status.dc_output_enabled) {
+    new_state = CHARGER_STANDBY;
+  } else if (charger_status.dc_output_enabled) {
+    new_state = CHARGER_ACTIVE;
+  }
+  
+  if (new_state != current_charger_state) {
+    Serial.print("Caricatore: ");
+    Serial.print(current_charger_state);
+    Serial.print(" -> ");
+    Serial.println(new_state);
+    current_charger_state = new_state;
+  }
+}
+
+void checkSafetyConditions() {
+  // Controllo temperatura
+  if (battery_status.temperature > 60 || battery_status.temperature < -20) {
+    setErrorState("Temperatura batteria fuori range");
+    return;
+  }
+  
+  // Controllo tensione batteria
+  if (battery_status.voltage > charge_params.max_voltage + 100) {  // +10V tolleranza
+    setErrorState("Overvoltage batteria");
+    return;
+  }
+  
+  // Controllo fault caricatore
+  if (charger_status.fault && current_system_state == CHARGING_ACTIVE) {
+    String error = "Fault caricatore: ";
+    error += charger_status.fault_code;
+    setErrorState(error);
+    return;
+  }
+  
+  // Controllo timeout caricatore
+  if (millis() - charger_status.timestamp > CHARGER_TIMEOUT && 
+      charger_status.timestamp > 0 && current_system_state == CHARGING_ACTIVE) {
+    setErrorState("Timeout comunicazione caricatore");
+    return;
+  }
+}
+
+void setErrorState(String error_msg) {
+  Serial.print("ERRORE: ");
+  Serial.println(error_msg);
+  current_system_state = FAULT_STATE;
+  fault_timestamp = millis();
+}
+
+// ============================================================================
+// FUNZIONI DI UTILITÀ
+// ============================================================================
+
+void updateLEDs(bool status_on, bool error_on) {
+  static unsigned long last_blink = 0;
+  static bool blink_state = false;
+  
+  if (millis() - last_blink > 500) {
+    blink_state = !blink_state;
+    last_blink = millis();
+  }
+  
+  // LED di stato
+  if (status_on) {
+    if (current_system_state == PRECHARGE_CHECK) {
+      digitalWrite(STATUS_LED_PIN, blink_state);
+    } else {
+      digitalWrite(STATUS_LED_PIN, HIGH);
+    }
+  } else {
+    digitalWrite(STATUS_LED_PIN, LOW);
+  }
+  
+  // LED di errore
+  if (error_on) {
+    if (current_system_state == EMERGENCY_STOP) {
+      digitalWrite(ERROR_LED_PIN, HIGH);
+    } else {
+      digitalWrite(ERROR_LED_PIN, blink_state);
+    }
+  } else {
+    digitalWrite(ERROR_LED_PIN, LOW);
+  }
+}
+
+void processSerialCommands() {
+  if (Serial.available()) {
+    char cmd = Serial.read();
+    
+    switch (cmd) {
+      case 's':  // Status
+        printSystemStatus();
+        break;
+        
+      case 'r':  // Reset
+        if (current_system_state == FAULT_STATE || current_system_state == EMERGENCY_STOP) {
+          current_system_state = WAITING_BMS;
+          emergency_stop_active = false;
+          communication_errors = 0;
+          Serial.println("Sistema resettato");
+        }
+        break;
+        
+      case 't':  // Test mode
+        Serial.println("Modalità test - Simulazione comando BMS start");
+        charging_authorized = true;
+        charge_params.max_voltage = VOUT_MAX_DEFAULT * 10;
+        charge_params.max_current = IOUT_MAX_DEFAULT * 10;
+        charge_params.target_voltage = (VOUT_MAX_DEFAULT - 20) * 10;
+        current_system_state = PRECHARGE_CHECK;
+        break;
+        
+      case 'x':  // Stop
+        charging_authorized = false;
+        if (current_system_state == CHARGING_ACTIVE) {
+          current_system_state = CHARGING_COMPLETE;
+        }
+        Serial.println("Stop carica manuale");
+        break;
+    }
+  }
+}
+
+void printSystemStatus() {
+  Serial.println("\n=== STATO SISTEMA ===");
+  Serial.print("Sistema: "); Serial.println(current_system_state);
+  Serial.print("Caricatore: "); Serial.println(current_charger_state);
+  Serial.print("Autorizzato: "); Serial.println(charging_authorized);
+  Serial.print("Emergency Stop: "); Serial.println(emergency_stop_active);
+  
+  Serial.println("\n=== BATTERIA ===");
+  Serial.print("Tensione: "); Serial.print(battery_status.voltage / 10.0); Serial.println("V");
+  Serial.print("Corrente: "); Serial.print(battery_status.current / 10.0); Serial.println("A");
+  Serial.print("SOC: "); Serial.print(battery_status.soc); Serial.println("%");
+  Serial.print("Temperatura: "); Serial.print(battery_status.temperature); Serial.println("°C");
+  
+  Serial.println("\n=== CARICATORE ===");
+  Serial.print("Vout: "); Serial.print(charger_status.output_voltage / 10.0); Serial.println("V");
+  Serial.print("Iout: "); Serial.print(charger_status.output_current / 10.0); Serial.println("A");
+  Serial.print("Abilitato: "); Serial.println(charger_status.enabled);
+  Serial.print("AC Presente: "); Serial.println(charger_status.ac_present);
+  Serial.print("Fault: "); Serial.println(charger_status.fault);
+  
+  Serial.println("\n=== PARAMETRI CARICA ===");
+  Serial.print("Vmax: "); Serial.print(charge_params.max_voltage / 10.0); Serial.println("V");
+  Serial.print("Imax: "); Serial.print(charge_params.max_current / 10.0); Serial.println("A");
+  Serial.print("Vtarget: "); Serial.print(charge_params.target_voltage / 10.0); Serial.println("V");
+  
+  Serial.print("\nEnergia sessione: "); Serial.print(charging_session_energy); Serial.println(" Wh");
+  Serial.print("Errori comunicazione: "); Serial.println(communication_errors);
+  Serial.println("==================\n");
+}
+
+// ============================================================================
+// LOOP PRINCIPALE
+// ============================================================================
+
+void loop() {
+  unsigned long now = millis();
+  
+  // Processa messaggi CAN in arrivo
+  processCAN();
+  
+  // Aggiorna macchina a stati
+  updateSystemState();
+  
+  // Invia controllo al caricatore
+  if (now - last_control_send >= CONTROL_INTERVAL) {
+    sendChargerControl();
+    last_control_send = now;
+  }
+  
+  // Invia stato al BMS
+  if (now - last_status_send >= STATUS_INTERVAL) {
+    sendStatusToBMS();
+    last_status_send = now;
+  }
+  
+  // Processa comandi seriali
+  processSerialCommands();
+  
+  // Breve delay per non sovraccaricare il loop
+  delay(10);
+}

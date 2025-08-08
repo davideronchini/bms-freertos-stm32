@@ -1,0 +1,68 @@
+//
+// !!! WARNING !!! AUTO-GENERATED FILE!
+// PLEASE DO NOT MODIFY IT AND USE "platformio.ini":
+// https://docs.platformio.org/page/projectconf/section_env_build.html#build-flags
+//
+{
+    "configurations": [
+        {
+            "name": "PlatformIO",
+            "includePath": [
+                "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/include",
+                "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/src",
+                "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/UserInterface",
+                "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/LTC6811",
+                "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/LTC681x",
+                "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/LT_SPI",
+                "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/Linduino",
+                "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/SPI/src",
+                "/Users/davide/.platformio/packages/framework-arduino-avr/cores/arduino",
+                "/Users/davide/.platformio/packages/framework-arduino-avr/variants/standard",
+                "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/LTC6813",
+                "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/EEPROM/src",
+                "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/HID/src",
+                "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/SoftwareSerial/src",
+                "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/Wire/src",
+                ""
+            ],
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true,
+                "path": [
+                    "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/include",
+                    "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/src",
+                    "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/UserInterface",
+                    "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/LTC6811",
+                    "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/LTC681x",
+                    "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/LT_SPI",
+                    "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/Linduino",
+                    "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/SPI/src",
+                    "/Users/davide/.platformio/packages/framework-arduino-avr/cores/arduino",
+                    "/Users/davide/.platformio/packages/framework-arduino-avr/variants/standard",
+                    "/Users/davide/Documents/GitHub/BMS-24-25/DC2259A&DC2350A-Arduino UNO/lib/LTC6813",
+                    "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/EEPROM/src",
+                    "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/HID/src",
+                    "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/SoftwareSerial/src",
+                    "/Users/davide/.platformio/packages/framework-arduino-avr/libraries/Wire/src",
+                    ""
+                ]
+            },
+            "defines": [
+                "PLATFORMIO=60118",
+                "ARDUINO_AVR_UNO",
+                "F_CPU=16000000L",
+                "ARDUINO_ARCH_AVR",
+                "ARDUINO=10808",
+                "__AVR_ATmega328P__",
+                ""
+            ],
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++11",
+            "compilerPath": "/Users/davide/.platformio/packages/toolchain-atmelavr/bin/avr-gcc",
+            "compilerArgs": [
+                "-mmcu=atmega328p",
+                ""
+            ]
+        }
+    ],
+    "version": 4
+}
