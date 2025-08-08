@@ -1,4 +1,4 @@
-# BMS 24-25  
+# BMS - FreeRTOS 
 **`Nucleo F446RE ⚡ + FreeRTOS ⏱️`**
 
 This repository contains the firmware for managing the Battery Management System (BMS) of the 2024–2025 Formula SAE electric vehicle, running on the **STM32 Nucleo-F446RE** with **FreeRTOS**.  
@@ -127,6 +127,7 @@ The system uses FreeRTOS to separate safety-critical and non-critical tasks. Tas
 - Functions provided by Analog Devices are wrapped in `Drivers/AnalogDevices_LTC`
 - Interface managed by `cell_monitoring.c` task
 
+<!---
 ### DWT Delay
 
 Microsecond-level delays (e.g. for LTC commands) are implemented with `DWT_Delay.h`, based on the ARM Core debug timer:
@@ -135,7 +136,7 @@ Microsecond-level delays (e.g. for LTC commands) are implemented with `DWT_Delay
 DWT_Delay_Init();         // Call once in system init
 DWT_Delay_us(200);        // Delay 200 microseconds
 ```
-
+--->
 ---
 
 ## 🛠️ Getting Started
@@ -186,7 +187,7 @@ To run the BMS firmware:
 
 ## 📬 Contact
 
-For questions, contributions, or collaborations:
+For questions, contributions, or collaborations with my FS Team:
 
 - 📧 Email: [formulasae@sm.univpm.it](mailto:formulasae@sm.univpm.it)
 - 🔗 LinkedIn: [polimarcheracingteam](https://www.linkedin.com/company/polimarcheracingteam/posts/?feedView=all)
